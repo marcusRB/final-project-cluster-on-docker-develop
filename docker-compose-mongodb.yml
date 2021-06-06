@@ -41,9 +41,8 @@ services:
 
 networks:
     mongodbnet:
-        name : mongodbnet
-        driver: bridge
-        attachable: true
+        external: true
+        name: mongodbnet
 
 volumes:
     rs1:
