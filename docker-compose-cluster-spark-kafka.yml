@@ -1,0 +1,255 @@
+## VERSION 1.1.0 DOCKER-COMPOSE 
+version: "3.8"
+services:
+
+    zookeeper:
+        image: wurstmeister/zookeeper:3.4.6
+        container_name: zookeeper
+        ports:
+          - 2181:2181
+        networks:
+          - kafkanet
+
+
+    kafka:
+        image: wurstmeister/kafka:2.13-2.7.0
+        container_name: kafka
+        depends_on:
+            - zookeeper
+        environment:
+            KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+            KAFKA_ADVERTISED_PORT: 9092
+            KAFKA_ADVERTISED_HOST_NAME: kafka
+            KAFKA_ADVERTISED_LISTENERS: INSIDE://:9092,OUTSIDE://localhost:19092
+            KAFKA_LISTENERS: INSIDE://:9092,OUTSIDE://0.0.0.0:19092
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
+            KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
+            KAFKA_CREATE_TOPICS: sales-topic:1:1,fraud-topic:1:1,insurance-raw:8:1
+            # KAFKA_ADVERTISED_HOST_NAME: kafka
+            # KAFKA_ADVERTISED_LISTENERS: INSIDE://:9092,OUTSIDE://localhost:29092
+            # KAFKA_LISTENERS: INSIDE://:9092,OUTSIDE://:29092
+            # KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
+            # KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
+            # KAFKA_CREATE_TOPICS: sales-topic:2:1,fraud-topic:1:1,insurance-raw:8:1
+            # KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+        command: [start-kafka.sh]
+        ports:
+            - 9092:9092
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock
+        networks:
+            - kafkanet
+            - sparknet
+            - mongodbnet
+
+    database:
+        image: postgres:11
+        container_name: postgres
+        environment:
+            POSTGRES_USER: ${POSTGRES_USER}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        ports:
+            - 5432:5432
+        volumes:
+            - ./services/database/schema.sql:/docker-entrypoint-initdb.d/1-schema.sql
+            - ./services/database/seed.sql:/docker-entrypoint-initdb.d/2-seed.sql
+            - postgres:/var/lib/postgresql/data
+        networks:
+            - kafkanet
+            - sparknet
+            - supersetnet       
+
+
+    producer:
+       # build: ./services/producer
+       # image: mrussorb/cluster-kafka:producer-pg-v${KAFKA_PROD_VER}
+        image: staging-producer:latest 
+        container_name: kafka-producer
+        command: sh -c "dockerize -wait tcp://zookeeper:2181 -wait tcp://kafka:9092 -wait tcp://database:5432 npm start"
+        depends_on:
+            - zookeeper
+            - kafka
+            - database
+        environment:
+            PGHOST: database
+            PGPORT: 5432
+            PGUSER: ${POSTGRES_USER}
+            PGDATABASE: ${POSTGRES_USER}
+            PGPASSWORD: ${POSTGRES_PASSWORD}
+            PRODUCER_PORT: ${PRODUCER_PORT}
+            KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+        ports:
+            - ${PRODUCER_PORT}:${PRODUCER_PORT}
+        networks:
+            - kafkanet
+
+
+    consumer:
+        image: mrussorb/cluster-kafka:consumer-pg-v${KAFKA_CONS_VER}
+        # build: ./services/consumer
+        container_name: kafka-consumer
+        command: sh -c "dockerize -wait tcp://zookeeper:2181 -wait tcp://kafka:9092 -wait tcp://database:5432 npm start"
+        depends_on:
+            - zookeeper
+            - kafka
+            - database
+        environment:
+            PGHOST: database
+            PGPORT: 5432
+            PGUSER: ${POSTGRES_USER}
+            PGDATABASE: ${POSTGRES_USER}
+            PGPASSWORD: ${POSTGRES_PASSWORD}
+            KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+        networks:
+            - kafkanet
+            - sparknet
+         
+
+    jupyterlab:
+        image: mrussorb/cluster-jupyterlab:3.0.14-spark-3.11-v1.0.0
+        container_name: jupyterlab
+        ports:
+            - 8888:8888
+        volumes:
+            - shared-workspace:/opt/workspace
+        networks:
+           - sparknet
+           - mongodbnet
+
+    grafana:
+        image: grafana/grafana:7.5.5
+        container_name: grafana
+        expose:
+            - "3000"
+        ports:
+            - 3000:3000
+        environment:
+            - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+        volumes:
+            - ./grafana/provisioning/:/etc/grafana/provisioning/
+        networks:
+            - kafkanet
+            - mongodbnet
+
+    spark-master:
+        image: mrussorb/cluster-spark-master:3.1.1-hadoop3.2-v1.1.0      
+        container_name: spark-master
+        expose:
+            - "7077"
+            - "8080"
+            - "4040"
+            - "4041"
+            - "10000"
+            - "10001"
+        ports:
+            - 7077:7077
+            - 8080:8080
+            - 4040:4040
+            - 4041:4041
+            - 10000:10000
+            - 10001:10001
+        volumes:
+            - shared-workspace:/opt/workspace
+        networks: 
+            - sparknet
+            - mongodbnet
+                
+            
+    spark-worker-1:
+        image: mrussorb/cluster-spark-worker:3.1.1-hadoop3.2-v1.1.0
+        container_name: spark-worker-1
+        environment:
+            - SPARK_WORKER_CORES=1
+            - SPARK_WORKER_MEMORY=512m
+        ports:
+            - 8081:8081
+        volumes:
+            - shared-workspace:/opt/workspace
+        depends_on:
+            - spark-master
+        networks:
+            - sparknet
+            - mongodbnet
+
+    spark-worker-2:
+        image: mrussorb/cluster-spark-worker:3.1.1-hadoop3.2-v1.1.0
+        container_name: spark-worker-2
+        environment:
+            - SPARK_WORKER_CORES=1
+            - SPARK_WORKER_MEMORY=512m
+        ports:
+            - 8082:8081
+        volumes:
+            - shared-workspace:/opt/workspace
+        depends_on:
+            - spark-master
+        networks: 
+            - sparknet
+            - mongodbnet
+
+    spark-worker-3:
+        image: mrussorb/cluster-spark-worker:3.1.1-hadoop3.2-v1.1.0
+        container_name: spark-worker-3
+        environment:
+            - SPARK_WORKER_CORES=1
+            - SPARK_WORKER_MEMORY=512m
+        ports:
+            - 8083:8081
+        volumes:
+            - shared-workspace:/opt/workspace
+        depends_on:
+            - spark-master
+        networks: 
+            - sparknet
+            - mongodbnet
+
+    redis:
+        image: redis
+        container_name: redis
+        restart: always
+        volumes:
+            - redis:/data
+        networks:
+            - supersetnet
+    
+    superset:
+        image: amancevice/superset
+        container_name: superset
+        restart: always
+        depends_on:
+            - redis
+            - database
+        environment:
+            MAPBOX_API_KEY: ${MAPBOX_API_KEY}
+        ports:
+            - 8088:8088
+        expose:
+            - "8088"
+        volumes:
+            - ./superset/superset_config.py:/etc/superset/superset_config.py
+        networks:
+            - supersetnet
+            - kafkanet
+
+
+
+volumes:
+    shared-workspace:
+        name: "hadoop-distributed-file-system"
+        driver: local
+    redis:
+    postgres:
+    
+networks:
+    kafkanet:
+        name : kafkanet
+        driver: bridge
+    sparknet:
+        name: sparknet
+        driver: bridge
+    mongodbnet:
+        external: true
+        name: mongodbnet
+    supersetnet:
+        name: supersetnet
+        driver: bridge
