@@ -284,8 +284,8 @@ services:
             - kafkanet
 
     mlflow:                                             # create a MLFlow container
-        #build: './docker/mlflow_docker'                        # construct the container along the Dockerfile in this folder
-        image: build_mlflow:latest
+        build: '/mlflow_docker'                        # construct the container along the Dockerfile in this folder
+        #image: build_mlflow:latest
         container_name: mlflow_container
         ports:
             - "5000:5000"                               # expose port
